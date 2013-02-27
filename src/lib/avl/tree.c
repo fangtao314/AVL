@@ -378,7 +378,8 @@ static struct tree* tree_find_node(int key, struct tree* tree)
  * \fn tree_delete_node
  * \brief Delete one single node with key: key int the subtree tree
  */
-static int tree_delete_node(int key, struct tree* tree)
+static int
+tree_delete_node(int key, struct tree* tree, int(*dtor)(void*, void*), void* dtor_args)
 {
         if (tree == NULL)
                 return NULL_PTR;
@@ -388,13 +389,13 @@ static int tree_delete_node(int key, struct tree* tree)
         {
                 if (key < tree->key)
                 {
-                        key = tree_delete_node(key, tree->left);
+                        key = tree_delete_node(key, tree->left, dtor, dtor_args);
                         tree_depth(tree);
                         return key;
                 }
                 else
                 {
-                        key = tree_delete_node(key, tree->right);
+                        key = tree_delete_node(key, tree->right, dtor, dtor_args);
                         tree_depth(tree);
                         return key;
                 }
@@ -487,6 +488,9 @@ static int tree_delete_node(int key, struct tree* tree)
         tree_balance(t->parent);
         t->root->nodes--;
 
+        if (dtor != NULL)
+                dtor(t->data, dtor_args);
+
         /* Free the detached node */
         memset(t, 0, sizeof(*t));
         free(t);
@@ -504,11 +508,12 @@ static int tree_add(struct tree_root* root, struct tree* tree)
         if (root == NULL || tree == NULL)
                 return NULL_PTR;
 
+        int ret = E_INVALID_ARG;
         pthread_mutex_lock(&root->mutex);
         /* Add the node into the tree if there already is one */
         if (root->tree != NULL)
         {
-                int ret = tree_add_node(root->tree, tree);
+                ret = tree_add_node(root->tree, tree);
                 goto success;
         }
 
@@ -516,7 +521,7 @@ static int tree_add(struct tree_root* root, struct tree* tree)
         root->tree = tree;
 success:
         pthread_mutex_unlock(&root->mutex);
-        return EXIT_SUCCESS;
+        return ret;
 }
 
 /**
@@ -548,16 +553,19 @@ static struct tree* tree_new_node(int key, void* data, struct tree_root* root)
  * \fn tree_flush_node
  * \brief Flush everything below this node and the node itself
  */
-static int tree_flush_node(struct tree* tree, int flags)
+static int
+tree_flush_node(struct tree* tree, int (*dtor)(void*, void*), void* dtor_arg)
 {
         if (tree == NULL)
                 return NULL_PTR;
 
-        tree_flush_node(tree->left, flags);
-        tree_flush_node(tree->right, flags);
+        tree_flush_node(tree->left, dtor, dtor_arg);
+        tree_flush_node(tree->right, dtor, dtor_arg);
 
-        if (flags == FLUSH_DEALLOC && tree->data != NULL)
-                free(tree->data);
+        if (dtor != NULL)
+        {
+                dtor(tree->data, dtor_arg);
+        }
 
         printf("Flushing %X\n", tree->key);
         memset(tree, 0, sizeof(*tree));
@@ -570,13 +578,13 @@ static int tree_flush_node(struct tree* tree, int flags)
  * \fn tree_flush
  * \brief Delete the tree and its content
  */
-int tree_flush(struct tree_root* root, int flags)
+int tree_flush(struct tree_root* root, int(*dtor)(void*,void*), void* dtor_args)
 {
         if (root == NULL)
                 return NULL_PTR;
 
         pthread_mutex_lock(&root->mutex);
-        tree_flush_node(root->tree, flags);
+        tree_flush_node(root->tree, dtor, dtor_args);
         pthread_mutex_unlock(&root->mutex);
 
         pthread_mutex_destroy(&root->mutex);
@@ -590,13 +598,18 @@ int tree_flush(struct tree_root* root, int flags)
  * \fn tree_find
  * \brief Find a node in the tree
  */
-static struct tree* tree_find(int key, struct tree_root* t)
+static void* tree_find(int key, struct tree_root* t)
 {
         if (t == NULL)
                 return NULL;
 
+        void* ret = NULL;
         pthread_mutex_lock(&t->mutex);
-        struct tree* ret = tree_find_node(key, t->tree);
+        struct tree* node = tree_find_node(key, t->tree);
+        if (node == NULL)
+                goto err;
+        ret = node->data;
+err:
         pthread_mutex_unlock(&t->mutex);
         return ret;
 }
@@ -605,12 +618,13 @@ static struct tree* tree_find(int key, struct tree_root* t)
  * \fn tree_delete
  * \brief Delete a node from the tree
  */
-static int tree_delete(int key, struct tree_root* root)
+static int
+tree_delete(int key, struct tree_root* root, int (*dtor)(void*,void*), void* dtor_args)
 {
         if (root == NULL)
                 return NULL_PTR;
         pthread_mutex_lock(&root->mutex);
-        int ret = tree_delete_node(key, root->tree);
+        int ret = tree_delete_node(key, root->tree, dtor, dtor_args);
         pthread_mutex_unlock(&root->mutex);
         return ret;
 }
@@ -682,6 +696,15 @@ int tree_dump(struct tree_root* root)
         return EXIT_SUCCESS;
 }
 
+static int cleanup(void* ptr, void* args)
+{
+        if (ptr == NULL)
+                return NULL_PTR;
+
+        free(ptr);
+        return EXIT_SUCCESS;
+}
+
 int main()
 {
         struct tree_root* t = tree_new_avl();
@@ -697,8 +720,8 @@ int main()
                 tree_new_node(i, NULL, t);
                 tree_dump(t);
         }
-        tree_delete(8, t);
-        tree_delete(9, t);
+        tree_delete(8, t, &cleanup, NULL);
+        tree_delete(9, t, &cleanup, NULL);
         tree_dump(t);
         for (; i <= 32; i++)
         {
@@ -706,11 +729,12 @@ int main()
                 tree_dump(t);
         }
 
-        struct tree* a = tree_find(4, t);
+        struct tree* a = tree_find_node(4, t->tree);
         struct tree* b = tree_find_prev(a);
         struct tree* c = tree_find_next(a);
 
-        printf("%X - %X - %X\n", b->key, a->key, c->key);
+        printf("ptr: %X - %X - %X\n", b, a, c);
+        printf("key: %X - %X - %X\n", b->key, a->key, c->key);
 
         i = pthread_mutex_trylock(&t->mutex);
         printf("%X\n", i);
@@ -752,7 +776,7 @@ int main()
         }
         printf("\n");
 
-        tree_flush(t, FLUSH_DEALLOC);
+        tree_flush(t, cleanup, NULL);
         t = NULL;
         return EXIT_SUCCESS;
 }

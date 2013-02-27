@@ -17,7 +17,6 @@
  */
 
 #include <pthread.h>
-#include <x86_64-linux-gnu/bits/pthreadtypes.h>
 
 #ifndef __TREE_H
 #define __TREE_H
@@ -56,9 +55,9 @@ struct tree_root {
         unsigned int nodes;
 
         struct tree* (*add)(int key, void* data, struct tree_root* root);
-        struct tree* (*find)(int key, struct tree_root* root);
-        int (*delete)(int key, struct tree_root* root);
-        int (*flush)(struct tree_root* root, int flags);
+        void* (*find)(int key, struct tree_root* root);
+        int (*delete)(int, struct tree_root*, int(*dtor)(void*,void*), void*);
+        int (*flush)(struct tree_root*, int(*dtor)(void*, void*), void*);
 
         pthread_mutex_t mutex;
 };
